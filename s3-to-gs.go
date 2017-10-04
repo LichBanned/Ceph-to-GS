@@ -7,9 +7,9 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
-    "strconv"
 
 	"cloud.google.com/go/storage"
 	"encoding/hex"
@@ -79,8 +79,8 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		return
 	}
 	{
-        *mw.count++
-		log.Print(mw.s3bucketname+"/"+mw.s3fileName, " End GC Copy, file num " + strconv.Itoa(*mw.count) + "\n")
+		*mw.count++
+		log.Print(mw.s3bucketname+"/"+mw.s3fileName, " End GC Copy, file num "+strconv.Itoa(*mw.count)+"\n")
 	}
 
 	err = os.Remove(mw.filename)
@@ -112,20 +112,20 @@ func getGSfileMap(client *storage.Client, ctx context.Context, bucket, prefix, d
 	return fileMap, nil
 }
 
-func main() {   
-    s3endpoint := flag.String("s3endpoint", "", "s3 url")
-    s3accessKeyID := flag.String("s3ID", "", "s3 access ID")
-    s3secretAccessKey := flag.String("s3Key", "", "s3 access Key")
-    s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
-    projectID := flag.String("GCproject", "", "gcloud projectID")
-    GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
+func main() {
+	s3endpoint := flag.String("s3endpoint", "", "s3 url")
+	s3accessKeyID := flag.String("s3ID", "", "s3 access ID")
+	s3secretAccessKey := flag.String("s3Key", "", "s3 access Key")
+	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
+	projectID := flag.String("GCproject", "", "gcloud projectID")
+	GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
 
-    flag.Parse()
-    
+	flag.Parse()
+
 	if *projectID == "" {
 		log.Fatalf("GCproject variable must be set, use --GCproject .\n")
-	}    
-    
+	}
+
 	var queueCapacity int32 = 5000
 	count := 0
 
@@ -156,7 +156,7 @@ func main() {
 			continue
 		}
 		GSFileMap := make(map[string]string)
-        log.Println("Create GS file map")
+		log.Println("Create GS file map")
 		GSFileMap, err = getGSfileMap(GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
 		if err != nil {
 			log.Fatal(err)
@@ -164,7 +164,7 @@ func main() {
 
 		doneCh := make(chan struct{})
 		defer close(doneCh)
-        log.Println("Compare GS file map to s3 files")
+		log.Println("Compare GS file map to s3 files")
 		for s3file := range s3Client.ListObjects(s3bucket.Name, "", true, doneCh) {
 			if s3file.Err != nil {
 				log.Println(s3file.Err)
