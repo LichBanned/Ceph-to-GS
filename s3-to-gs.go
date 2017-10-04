@@ -77,8 +77,7 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		log.Print(mw.s3fileName, err)
 		os.Remove(mw.filename)
 		return
-	}
-	{
+	} else {
 		*mw.count++
 		log.Print(mw.s3bucketname+"/"+mw.s3fileName, " End GC Copy, file num "+strconv.Itoa(*mw.count)+"\n")
 	}
@@ -119,11 +118,17 @@ func main() {
 	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
 	projectID := flag.String("GCproject", "", "gcloud projectID")
 	GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
+	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
 
 	flag.Parse()
 
-	if *projectID == "" {
-		log.Fatalf("GCproject variable must be set, use --GCproject .\n")
+	excludeBuckets := make(map[string]bool)
+	for _, bucket := range strings.Split(*excludeBucket, ",") {
+		excludeBuckets[bucket] = true
+	}
+	
+	if *projectID == "" || *s3endpoint == "" || *GSbucketName == "" {
+		log.Fatalf("GCproject, GSbucketName, s3endpoint variables must be set.\n")
 	}
 
 	var queueCapacity int32 = 5000
@@ -152,7 +157,7 @@ func main() {
 		log.Fatalln(err)
 	}
 	for _, s3bucket := range s3buckets {
-		if s3bucket.Name == "ridero-cache" {
+		if excludeBuckets[s3bucket.Name] == true {
 			continue
 		}
 		GSFileMap := make(map[string]string)
