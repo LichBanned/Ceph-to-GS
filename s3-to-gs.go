@@ -126,7 +126,7 @@ func main() {
 	for _, bucket := range strings.Split(*excludeBucket, ",") {
 		excludeBuckets[bucket] = true
 	}
-	
+
 	if *projectID == "" || *s3endpoint == "" || *GSbucketName == "" {
 		log.Fatalf("GCproject, GSbucketName, s3endpoint variables must be set.\n")
 	}
