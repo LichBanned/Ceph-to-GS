@@ -141,9 +141,6 @@ func main() {
 
 	ctx := context.Background()
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
 	// Creates a GCClient.
 	GCClient, err := storage.NewClient(ctx)
 	if err != nil {
@@ -166,7 +163,7 @@ func main() {
 		}
 		count = 0
 		GSFileMap := make(map[string]string)
-		log.Println("Create GS file map")
+		log.Println("Create GS file map", s3bucket.Name)
 		GSFileMap, err = getGSfileMap(GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
 		if err != nil {
 			log.Fatal(err)
@@ -174,15 +171,12 @@ func main() {
 
 		doneCh := make(chan struct{})
 		defer close(doneCh)
-		log.Println("Compare GS file map to s3 files")
+		log.Println("Compare GS file map to s3 files", s3bucket.Name)
 		for s3file := range s3Client.ListObjects(s3bucket.Name, "", true, doneCh) {
 			if s3file.Err != nil {
 				log.Println(s3file.Err)
 			}
-			select {
-			case _, _ = <-ticker.C:
-				log.Println("bucket:", s3bucket.Name, ",File processed:", count)
-			}
+
 			if "\""+GSFileMap[s3bucket.Name+"/"+s3file.Key]+"\"" != s3file.ETag {
 				work := MyWork{
 					s3fileName:   s3file.Key,
@@ -195,11 +189,12 @@ func main() {
 					filename:     *tmpdir + strings.Split(s3file.ETag, "\"")[1],
 					count:        &count,
 				}
-
+				if count%20 == 0 {
+					log.Println("bucket:", s3bucket.Name, ",File processed:", count, "File:", s3file.Key)
+				}
 				for queueCapacity-10 < workPool.QueuedWork() {
 					time.Sleep(100 * time.Millisecond)
 				}
-
 				if err := workPool.PostWork("routine", &work); err != nil {
 					log.Printf("ERROR: %s\n", err)
 				}
