@@ -2,18 +2,18 @@ package main
 
 import (
 	"flag"
-	"github.com/minio/minio-go"
 	"io"
 	"log"
 	"os"
 	"runtime"
-	"strconv"
+	//"strconv"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
 	"encoding/hex"
 	"github.com/goinggo/workpool"
+	"github.com/minio/minio-go"
 	"golang.org/x/net/context"
 	"google.golang.org/api/iterator"
 )
@@ -79,7 +79,7 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		return
 	} else {
 		*mw.count++
-		log.Print(mw.s3bucketname+"/"+mw.s3fileName, " End GC Copy, file num "+strconv.Itoa(*mw.count)+"\n")
+		//log.Print(mw.s3bucketname+"/"+mw.s3fileName, " End GC Copy, file num "+strconv.Itoa(*mw.count)+"\n")
 	}
 
 	err = os.Remove(mw.filename)
@@ -119,6 +119,7 @@ func main() {
 	projectID := flag.String("GCproject", "", "gcloud projectID")
 	GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
 	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
+	tmpdir := flag.String("tmpdir", "./tmp/", "tmpdir")
 
 	flag.Parse()
 
@@ -140,6 +141,9 @@ func main() {
 
 	ctx := context.Background()
 
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
 	// Creates a GCClient.
 	GCClient, err := storage.NewClient(ctx)
 	if err != nil {
@@ -160,6 +164,7 @@ func main() {
 		if excludeBuckets[s3bucket.Name] == true {
 			continue
 		}
+		count = 0
 		GSFileMap := make(map[string]string)
 		log.Println("Create GS file map")
 		GSFileMap, err = getGSfileMap(GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
@@ -174,6 +179,10 @@ func main() {
 			if s3file.Err != nil {
 				log.Println(s3file.Err)
 			}
+			select {
+			case _, _ = <-ticker.C:
+				log.Println("bucket:", s3bucket.Name, ",File processed:", count)
+			}
 			if "\""+GSFileMap[s3bucket.Name+"/"+s3file.Key]+"\"" != s3file.ETag {
 				work := MyWork{
 					s3fileName:   s3file.Key,
@@ -183,7 +192,7 @@ func main() {
 					s3Client:     s3Client,
 					GCClient:     GCClient,
 					WP:           workPool,
-					filename:     "./tmp/" + strings.Split(s3file.ETag, "\"")[1],
+					filename:     *tmpdir + strings.Split(s3file.ETag, "\"")[1],
 					count:        &count,
 				}
 
