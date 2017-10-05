@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"runtime"
-	//"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +39,10 @@ func main() {
 	GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
 	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
 	tmpdir := flag.String("tmpdir", "./tmp/", "tmpdir")
+	getNewFiles := flag.Bool("getNewFiles", false, "Get files modified in 24h")
+	redisHost := flag.String("redisHost", "localhost:6379", "redis server address")
+	redisPass := flag.String("redisPass", "", "redis password")
+	redisDB := flag.Int("redisDB", 0, "redis database")
 
 	flag.Parse()
 
@@ -56,13 +59,13 @@ func main() {
 	count := 0
 
 	Rclient := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password set
-		DB:       0,  // use default DB
+		Addr:     *redisHost,
+		Password: *redisPass, // no password set
+		DB:       *redisDB,   // use default DB
 	})
 	_, err := Rclient.Ping().Result()
 	if err != nil {
-		log.Print(err)
+		log.Fatalln(err)
 	}
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
@@ -104,10 +107,15 @@ func main() {
 		for s3file := range s3Client.ListObjects(s3bucket.Name, "", true, doneCh) {
 			if s3file.Err != nil {
 				log.Println(s3file.Err)
+				continue
 			}
-
+			if s3file.LastModified.After(time.Now().Add(-24*time.Hour)) && *getNewFiles == false {
+				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				continue
+			}
+			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
 			GSmd5, err := Rclient.Get(s3bucket.Name + "/" + s3file.Key).Result()
-			if GSmd5 != strings.Split(s3file.ETag, "\"")[1] || err == redis.Nil {
+			if GSmd5 != s3md5 || err == redis.Nil {
 				work := MyWork{
 					s3fileName:   s3file.Key,
 					GCbucket:     *GSbucketName,
@@ -116,7 +124,7 @@ func main() {
 					s3Client:     s3Client,
 					GCClient:     GCClient,
 					WP:           workPool,
-					filename:     *tmpdir + strings.Replace(s3file.Key, "/", "_", -1) + "_" + strings.Split(s3file.ETag, "\"")[1],
+					filename:     *tmpdir + strings.Replace(s3file.Key, "/", "_", -1) + "_" + s3md5,
 					count:        &count,
 				}
 				for queueCapacity-10 < workPool.QueuedWork() {
@@ -125,11 +133,11 @@ func main() {
 				if err := workPool.PostWork("routine", &work); err != nil {
 					log.Printf("ERROR: %s\n", err)
 				}
-				_ = Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
 			} else if err != nil {
 				log.Print(err)
 			} else {
-				_ = Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
 			}
 		}
 	}
