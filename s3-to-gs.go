@@ -12,6 +12,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	"encoding/hex"
+	"github.com/go-redis/redis"
 	"github.com/goinggo/workpool"
 	"github.com/minio/minio-go"
 	"golang.org/x/net/context"
@@ -79,7 +80,9 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		return
 	} else {
 		*mw.count++
-		//log.Print(mw.s3bucketname+"/"+mw.s3fileName, " End GC Copy, file num "+strconv.Itoa(*mw.count)+"\n")
+		if *mw.count%20 == 0 {
+			log.Println("bucket:", mw.s3bucketname, "File processed:", *mw.count, "File:", mw.s3fileName)
+		}
 	}
 
 	err = os.Remove(mw.filename)
@@ -89,12 +92,11 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	}
 }
 
-func getGSfileMap(client *storage.Client, ctx context.Context, bucket, prefix, delim string) (map[string]string, error) {
+func getGSfileMap(Rclient *redis.Client, client *storage.Client, ctx context.Context, bucket, prefix, delim string) error {
 	it := client.Bucket(bucket).Objects(ctx, &storage.Query{
 		Prefix:    prefix,
 		Delimiter: delim,
 	})
-	fileMap := make(map[string]string)
 	for {
 		attrs, err := it.Next()
 		if err == iterator.Done {
@@ -102,13 +104,17 @@ func getGSfileMap(client *storage.Client, ctx context.Context, bucket, prefix, d
 		}
 		if err != nil {
 			log.Println(err)
-			return nil, err
+			return err
 		}
 		if attrs.Name[len(attrs.Name)-1:] != "/" {
-			fileMap[attrs.Name] = hex.EncodeToString(attrs.MD5)
+			err := Rclient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
+			if err != nil {
+				log.Print(err)
+				return err
+			}
 		}
 	}
-	return fileMap, nil
+	return nil
 }
 
 func main() {
@@ -132,8 +138,18 @@ func main() {
 		log.Fatalf("GCproject, GSbucketName, s3endpoint variables must be set.\n")
 	}
 
-	var queueCapacity int32 = 5000
+	var queueCapacity int32 = 1000
 	count := 0
+
+	Rclient := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+	_, err := Rclient.Ping().Result()
+	if err != nil {
+		log.Print(err)
+	}
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -162,9 +178,8 @@ func main() {
 			continue
 		}
 		count = 0
-		GSFileMap := make(map[string]string)
 		log.Println("Create GS file map", s3bucket.Name)
-		GSFileMap, err = getGSfileMap(GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
+		err = getGSfileMap(Rclient, GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -177,7 +192,8 @@ func main() {
 				log.Println(s3file.Err)
 			}
 
-			if "\""+GSFileMap[s3bucket.Name+"/"+s3file.Key]+"\"" != s3file.ETag {
+			GSmd5, err := Rclient.Get("key2").Result()
+			if GSmd5 != strings.Split(s3file.ETag, "\"")[1] || err == redis.Nil {
 				work := MyWork{
 					s3fileName:   s3file.Key,
 					GCbucket:     *GSbucketName,
@@ -189,17 +205,15 @@ func main() {
 					filename:     *tmpdir + strings.Split(s3file.ETag, "\"")[1],
 					count:        &count,
 				}
-				if count%20 == 0 {
-					log.Println("bucket:", s3bucket.Name, ",File processed:", count, "File:", s3file.Key)
-				}
 				for queueCapacity-10 < workPool.QueuedWork() {
 					time.Sleep(100 * time.Millisecond)
 				}
 				if err := workPool.PostWork("routine", &work); err != nil {
 					log.Printf("ERROR: %s\n", err)
 				}
+			} else if err != nil {
+				log.Print(err)
 			}
 		}
 	}
-
 }
