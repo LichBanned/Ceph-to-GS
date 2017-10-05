@@ -110,11 +110,9 @@ func main() {
 			}
 			if s3file.LastModified.After(time.Now().Add(-24*time.Hour)) && *getNewFiles == false {
 				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
-				log.Print("New")
 				continue
 			}
 			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
-			//log.Println("S3",s3bucket.Name + "/" + s3file.Key, s3md5)
 			GSmd5, err := Rclient.Get(s3bucket.Name + "/" + s3file.Key).Result()
 			if GSmd5 != s3md5 || err == redis.Nil {
 				work := MyWork{
@@ -191,7 +189,6 @@ func getGSfileMap(Rclient *redis.Client, client *storage.Client, ctx context.Con
 			return err
 		}
 		if attrs.Name[len(attrs.Name)-1:] != "/" {
-			//log.Println("GS", attrs.Name, hex.EncodeToString(attrs.MD5))
 			err := Rclient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
 			if err != nil {
 				log.Print(err)
