@@ -4,7 +4,6 @@ import (
 	"flag"
 	"io"
 	"log"
-	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -38,7 +37,6 @@ func main() {
 	projectID := flag.String("GCproject", "", "gcloud projectID")
 	GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
 	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
-	tmpdir := flag.String("tmpdir", "./tmp/", "tmpdir")
 	getNewFiles := flag.Bool("getNewFiles", false, "Get files modified in 24h")
 	redisHost := flag.String("redisHost", "localhost:6379", "redis server address")
 	redisPass := flag.String("redisPass", "", "redis password")
@@ -48,6 +46,7 @@ func main() {
 
 	excludeBuckets := make(map[string]bool)
 	for _, bucket := range strings.Split(*excludeBucket, ",") {
+		//log.Print(bucket)
 		excludeBuckets[bucket] = true
 	}
 
@@ -111,9 +110,11 @@ func main() {
 			}
 			if s3file.LastModified.After(time.Now().Add(-24*time.Hour)) && *getNewFiles == false {
 				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				log.Print("New")
 				continue
 			}
 			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
+			//log.Println("S3",s3bucket.Name + "/" + s3file.Key, s3md5)
 			GSmd5, err := Rclient.Get(s3bucket.Name + "/" + s3file.Key).Result()
 			if GSmd5 != s3md5 || err == redis.Nil {
 				work := MyWork{
@@ -124,7 +125,6 @@ func main() {
 					s3Client:     s3Client,
 					GCClient:     GCClient,
 					WP:           workPool,
-					filename:     *tmpdir + strings.Replace(s3file.Key, "/", "_", -1) + "_" + s3md5,
 					count:        &count,
 				}
 				for queueCapacity-10 < workPool.QueuedWork() {
@@ -158,49 +158,21 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	GCw := obj.NewWriter(mw.ctx)
 	defer GCw.Close()
 
-	w, err := os.Create(mw.filename)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer w.Close()
-
 	//s3 file info
 	stat, err := s3reader.Stat()
 	if err != nil {
 		log.Print(err)
-		os.Remove(mw.filename)
 		return
 	}
 
-	if _, err := io.CopyN(w, s3reader, stat.Size); err != nil {
+	if _, err := io.CopyN(GCw, s3reader, stat.Size); err != nil {
 		log.Print(mw.s3fileName, err)
-		os.Remove(mw.filename)
-		return
-	}
-
-	r, err := os.Open(mw.filename)
-	if err != nil {
-		log.Print(err)
-		os.Remove(mw.filename)
-		return
-	}
-	defer r.Close()
-
-	if _, err := io.CopyN(GCw, r, stat.Size); err != nil {
-		log.Print(mw.s3fileName, err)
-		os.Remove(mw.filename)
 		return
 	} else {
 		*mw.count++
 		if *mw.count%20 == 0 {
 			log.Println("bucket:", mw.s3bucketname, "File processed:", *mw.count, "File:", mw.s3fileName)
 		}
-	}
-
-	err = os.Remove(mw.filename)
-	if err != nil {
-		log.Print(err)
-		return
 	}
 }
 
@@ -219,6 +191,7 @@ func getGSfileMap(Rclient *redis.Client, client *storage.Client, ctx context.Con
 			return err
 		}
 		if attrs.Name[len(attrs.Name)-1:] != "/" {
+			//log.Println("GS", attrs.Name, hex.EncodeToString(attrs.MD5))
 			err := Rclient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
 			if err != nil {
 				log.Print(err)
