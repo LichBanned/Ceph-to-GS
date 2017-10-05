@@ -91,7 +91,7 @@ func main() {
 		if excludeBuckets[s3bucket.Name] == true {
 			continue
 		}
-		count = 0
+		Rclient.FlushAll()
 		log.Println("Create GS file map", s3bucket.Name)
 		err = getGSfileMap(Rclient, GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
 		if err != nil {
@@ -116,7 +116,7 @@ func main() {
 					s3Client:     s3Client,
 					GCClient:     GCClient,
 					WP:           workPool,
-					filename:     *tmpdir + strings.Split(s3file.ETag, "\"")[1],
+					filename:     *tmpdir + strings.Replace(s3file.Key, "/", "_", -1) + "_" + strings.Split(s3file.ETag, "\"")[1],
 					count:        &count,
 				}
 				for queueCapacity-10 < workPool.QueuedWork() {
