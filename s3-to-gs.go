@@ -25,7 +25,6 @@ type MyWork struct {
 	GSClient     *storage.Client
 	ctx          context.Context
 	s3Client     *minio.Client
-	WP           *workpool.WorkPool
 	count        *int
 	GSfilename   string
 }
@@ -58,14 +57,15 @@ func main() {
 	var queueCapacity int32 = 1000
 	count := 0
 
-	Rclient := redis.NewClient(&redis.Options{
+	redisСlient := redis.NewClient(&redis.Options{
 		Addr:     *redisHost,
-		Password: *redisPass, // no password set
-		DB:       *redisDB,   // use default DB
+		Password: *redisPass,
+		DB:       *redisDB,
 	})
-	if _, err := Rclient.Ping().Result(); err != nil {
+	if _, err := redisСlient.Ping().Result(); err != nil {
 		log.Fatalln(err)
 	}
+	defer redisСlient.Close()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -93,9 +93,9 @@ func main() {
 		if excludeBuckets[s3bucket.Name] == true {
 			continue
 		}
-		Rclient.FlushAll()
+		redisСlient.FlushAll()
 		log.Println("Create GS file map", s3bucket.Name)
-		if err := getGSfileMap(Rclient, GSClient, ctx, *GSbucketName, s3bucket.Name+"/", ""); err != nil {
+		if err := getGSfileMap(redisСlient, GSClient, ctx, *GSbucketName, s3bucket.Name+"/", ""); err != nil {
 			log.Fatal(err)
 		}
 
@@ -110,10 +110,10 @@ func main() {
 			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
 			GSfilename := getGSfilename(s3bucket.Name, s3file.Key)
 			if s3file.LastModified.After(time.Now().Add(-24*time.Hour)) && *getNewFiles == false {
-				Rclient.Del(GSfilename)
+				redisСlient.Del(GSfilename)
 				continue
 			}
-			GSmd5, err := Rclient.Get(GSfilename).Result()
+			GSmd5, err := redisСlient.Get(GSfilename).Result()
 			if GSmd5 != s3md5 || err == redis.Nil {
 				work := MyWork{
 					s3fileName:   s3file.Key,
@@ -123,7 +123,6 @@ func main() {
 					s3Client:     s3Client,
 					GSClient:     GSClient,
 					count:        &count,
-					GSfilename:   GSfilename,
 				}
 				if err := delayFullQueue(workPool, queueCapacity-10); err != nil {
 					log.Printf("ERROR: %s\n", err)
@@ -131,11 +130,11 @@ func main() {
 				if err := workPool.PostWork("routine", &work); err != nil {
 					log.Printf("ERROR: %s\n", err)
 				}
-				Rclient.Del(GSfilename)
+				redisСlient.Del(GSfilename)
 			} else if err != nil {
 				log.Print(err)
 			} else {
-				Rclient.Del(GSfilename)
+				redisСlient.Del(GSfilename)
 			}
 		}
 	}
@@ -163,7 +162,8 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	bh := mw.GSClient.Bucket(mw.GSbucket)
 
 	//GS file to open
-	obj := bh.Object(mw.GSfilename)
+	GSfilename := getGSfilename(mw.s3bucketname, mw.s3fileName)
+	obj := bh.Object(GSfilename)
 	GSw := obj.NewWriter(mw.ctx)
 	defer GSw.Close()
 
@@ -185,7 +185,7 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	}
 }
 
-func getGSfileMap(Rclient *redis.Client, client *storage.Client, ctx context.Context, bucket, prefix, delim string) error {
+func getGSfileMap(redisСlient *redis.Client, client *storage.Client, ctx context.Context, bucket, prefix, delim string) error {
 	it := client.Bucket(bucket).Objects(ctx, &storage.Query{
 		Prefix:    prefix,
 		Delimiter: delim,
@@ -200,7 +200,7 @@ func getGSfileMap(Rclient *redis.Client, client *storage.Client, ctx context.Con
 			return err
 		}
 		if attrs.Name[len(attrs.Name)-1] != '/' {
-			err := Rclient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
+			err := redisСlient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
 			if err != nil {
 				log.Print(err)
 				return err
