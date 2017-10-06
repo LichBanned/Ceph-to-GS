@@ -48,6 +48,7 @@ func main() {
 	if *projectID == "" || *s3endpoint == "" || *GSbucketName == "" {
 		log.Fatalf("GSproject, GSbucketName, s3endpoint variables must be set.\n")
 	}
+
 	if *excludeBucket != "" && *copyBucket != "" {
 		log.Fatalf("Not use excludeBucket and copyBucket at same time ")
 	}
@@ -55,6 +56,12 @@ func main() {
 	var queueCapacity int32 = 1000
 	count := 0
 
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	workPool := workpool.New(runtime.NumCPU(), queueCapacity)
+
+	ctx := context.Background()
+	// Creates a redis Сlient
 	redisСlient := redis.NewClient(&redis.Options{
 		Addr:     *redisHost,
 		Password: *redisPass,
@@ -65,17 +72,12 @@ func main() {
 	}
 	defer redisСlient.Close()
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	workPool := workpool.New(runtime.NumCPU(), queueCapacity)
-
-	ctx := context.Background()
-
-	// Creates a GSClient.
+	// Creates a GS Client.
 	GSClient, err := storage.NewClient(ctx)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
+	defer GSClient.Close()
 
 	// Initialize minio client object.
 	s3Client, err := minio.New(*s3endpoint, *s3accessKeyID, *s3secretAccessKey, *s3useSSL)
@@ -139,6 +141,13 @@ func getGSfilename(bucket, filePath string) string {
 	return bucket + "/" + filePath
 }
 
+func delayFullQueue(WP *workpool.WorkPool, maxObj int32) error {
+	for maxObj < WP.QueuedWork() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
+}
+
 func getS3buckets(Client *minio.Client, exclude, include *string) ([]string, error) {
 	var buckets []string
 	if *include == "" {
@@ -161,13 +170,6 @@ func getS3buckets(Client *minio.Client, exclude, include *string) ([]string, err
 		buckets = strings.Split(*include, ",")
 	}
 	return buckets, nil
-}
-
-func delayFullQueue(WP *workpool.WorkPool, maxObj int32) error {
-	for maxObj < WP.QueuedWork() {
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
 }
 
 func (mw *MyWork) DoWork(workRoutine int) {
