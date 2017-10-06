@@ -37,6 +37,7 @@ func main() {
 	projectID := flag.String("GSproject", "", "gcloud projectID")
 	GSbucketName := flag.String("GSbucketName", "", "gcloud bucket name")
 	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
+	copyBucket := flag.String("copyBucket", "", "comma separated s3 bucket names to process, exclude bucket read from s3")
 	getNewFiles := flag.Bool("getNewFiles", false, "Get files modified in 24h")
 	redisHost := flag.String("redisHost", "localhost:6379", "redis server address")
 	redisPass := flag.String("redisPass", "", "redis password")
@@ -44,14 +45,11 @@ func main() {
 
 	flag.Parse()
 
-	excludeBuckets := make(map[string]bool)
-	for _, bucket := range strings.Split(*excludeBucket, ",") {
-		//log.Print(bucket)
-		excludeBuckets[bucket] = true
-	}
-
 	if *projectID == "" || *s3endpoint == "" || *GSbucketName == "" {
 		log.Fatalf("GSproject, GSbucketName, s3endpoint variables must be set.\n")
+	}
+	if *excludeBucket != "" && *copyBucket != "" {
+		log.Fatalf("Not use excludeBucket and copyBucket at same time ")
 	}
 
 	var queueCapacity int32 = 1000
@@ -85,30 +83,27 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	s3buckets, err := s3Client.ListBuckets()
+	s3buckets, err := getS3buckets(s3Client, excludeBucket, copyBucket)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	for _, s3bucket := range s3buckets {
-		if excludeBuckets[s3bucket.Name] == true {
-			continue
-		}
 		redisСlient.FlushAll()
-		log.Println("Create GS file map", s3bucket.Name)
-		if err := getGSfileMap(redisСlient, GSClient, ctx, *GSbucketName, s3bucket.Name+"/", ""); err != nil {
+		log.Println("Create GS file map", s3bucket)
+		if err := getGSfileMap(redisСlient, GSClient, ctx, *GSbucketName, s3bucket+"/", ""); err != nil {
 			log.Fatal(err)
 		}
 
 		doneCh := make(chan struct{})
 		defer close(doneCh)
-		log.Println("Compare GS file map to s3 files", s3bucket.Name)
-		for s3file := range s3Client.ListObjects(s3bucket.Name, "", true, doneCh) {
+		log.Println("Compare GS file map to s3 files", s3bucket)
+		for s3file := range s3Client.ListObjects(s3bucket, "", true, doneCh) {
 			if s3file.Err != nil {
 				log.Println(s3file.Err)
 				continue
 			}
 			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
-			GSfilename := getGSfilename(s3bucket.Name, s3file.Key)
+			GSfilename := getGSfilename(s3bucket, s3file.Key)
 			if s3file.LastModified.After(time.Now().Add(-24*time.Hour)) && *getNewFiles == false {
 				redisСlient.Del(GSfilename)
 				continue
@@ -118,7 +113,7 @@ func main() {
 				work := MyWork{
 					s3fileName:   s3file.Key,
 					GSbucket:     *GSbucketName,
-					s3bucketname: s3bucket.Name,
+					s3bucketname: s3bucket,
 					ctx:          ctx,
 					s3Client:     s3Client,
 					GSClient:     GSClient,
@@ -142,6 +137,30 @@ func main() {
 
 func getGSfilename(bucket, filePath string) string {
 	return bucket + "/" + filePath
+}
+
+func getS3buckets(Client *minio.Client, exclude, include *string) ([]string, error) {
+	var buckets []string
+	if *include == "" {
+		s3buckets, err := Client.ListBuckets()
+		if err != nil {
+			return nil, err
+		}
+		excludeBuckets := make(map[string]bool)
+		for _, bucket := range strings.Split(*exclude, ",") {
+			excludeBuckets[bucket] = true
+		}
+		for _, s3bucket := range s3buckets {
+			if excludeBuckets[s3bucket.Name] == true {
+				continue
+			} else {
+				buckets = append(buckets, s3bucket.Name)
+			}
+		}
+	} else {
+		buckets = strings.Split(*include, ",")
+	}
+	return buckets, nil
 }
 
 func delayFullQueue(WP *workpool.WorkPool, maxObj int32) error {
