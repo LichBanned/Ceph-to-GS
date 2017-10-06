@@ -19,14 +19,15 @@ import (
 
 type MyWork struct {
 	s3fileName   string
-	GCbucket     string
+	GSbucket     string
 	s3bucketname string
 	filename     string
-	GCClient     *storage.Client
+	GSClient     *storage.Client
 	ctx          context.Context
 	s3Client     *minio.Client
 	WP           *workpool.WorkPool
 	count        *int
+	GSfilename   string
 }
 
 func main() {
@@ -34,8 +35,8 @@ func main() {
 	s3accessKeyID := flag.String("s3ID", "", "s3 access ID")
 	s3secretAccessKey := flag.String("s3Key", "", "s3 access Key")
 	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
-	projectID := flag.String("GCproject", "", "gcloud projectID")
-	GSbucketName := flag.String("GCbucketName", "", "gcloud bucket name")
+	projectID := flag.String("GSproject", "", "gcloud projectID")
+	GSbucketName := flag.String("GSbucketName", "", "gcloud bucket name")
 	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
 	getNewFiles := flag.Bool("getNewFiles", false, "Get files modified in 24h")
 	redisHost := flag.String("redisHost", "localhost:6379", "redis server address")
@@ -51,7 +52,7 @@ func main() {
 	}
 
 	if *projectID == "" || *s3endpoint == "" || *GSbucketName == "" {
-		log.Fatalf("GCproject, GSbucketName, s3endpoint variables must be set.\n")
+		log.Fatalf("GSproject, GSbucketName, s3endpoint variables must be set.\n")
 	}
 
 	var queueCapacity int32 = 1000
@@ -62,8 +63,7 @@ func main() {
 		Password: *redisPass, // no password set
 		DB:       *redisDB,   // use default DB
 	})
-	_, err := Rclient.Ping().Result()
-	if err != nil {
+	if _, err := Rclient.Ping().Result(); err != nil {
 		log.Fatalln(err)
 	}
 
@@ -73,8 +73,8 @@ func main() {
 
 	ctx := context.Background()
 
-	// Creates a GCClient.
-	GCClient, err := storage.NewClient(ctx)
+	// Creates a GSClient.
+	GSClient, err := storage.NewClient(ctx)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -95,8 +95,7 @@ func main() {
 		}
 		Rclient.FlushAll()
 		log.Println("Create GS file map", s3bucket.Name)
-		err = getGSfileMap(Rclient, GCClient, ctx, *GSbucketName, s3bucket.Name+"/", "")
-		if err != nil {
+		if err := getGSfileMap(Rclient, GSClient, ctx, *GSbucketName, s3bucket.Name+"/", ""); err != nil {
 			log.Fatal(err)
 		}
 
@@ -108,37 +107,49 @@ func main() {
 				log.Println(s3file.Err)
 				continue
 			}
+			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
+			GSfilename := getGSfilename(s3bucket.Name, s3file.Key)
 			if s3file.LastModified.After(time.Now().Add(-24*time.Hour)) && *getNewFiles == false {
-				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				Rclient.Del(GSfilename)
 				continue
 			}
-			s3md5 := strings.Replace(s3file.ETag, "\"", "", -1)
-			GSmd5, err := Rclient.Get(s3bucket.Name + "/" + s3file.Key).Result()
+			GSmd5, err := Rclient.Get(GSfilename).Result()
 			if GSmd5 != s3md5 || err == redis.Nil {
 				work := MyWork{
 					s3fileName:   s3file.Key,
-					GCbucket:     *GSbucketName,
+					GSbucket:     *GSbucketName,
 					s3bucketname: s3bucket.Name,
 					ctx:          ctx,
 					s3Client:     s3Client,
-					GCClient:     GCClient,
-					WP:           workPool,
+					GSClient:     GSClient,
 					count:        &count,
+					GSfilename:   GSfilename,
 				}
-				for queueCapacity-10 < workPool.QueuedWork() {
-					time.Sleep(100 * time.Millisecond)
+				if err := delayFullQueue(workPool, queueCapacity-10); err != nil {
+					log.Printf("ERROR: %s\n", err)
 				}
 				if err := workPool.PostWork("routine", &work); err != nil {
 					log.Printf("ERROR: %s\n", err)
 				}
-				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				Rclient.Del(GSfilename)
 			} else if err != nil {
 				log.Print(err)
 			} else {
-				Rclient.Del(s3bucket.Name + "/" + s3file.Key)
+				Rclient.Del(GSfilename)
 			}
 		}
 	}
+}
+
+func getGSfilename(bucket, filePath string) string {
+	return bucket + "/" + filePath
+}
+
+func delayFullQueue(WP *workpool.WorkPool, maxObj int32) error {
+	for maxObj < WP.QueuedWork() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }
 
 func (mw *MyWork) DoWork(workRoutine int) {
@@ -148,13 +159,13 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		log.Print(mw.s3fileName, err)
 	}
 	defer s3reader.Close()
-	//open GC bucket
-	bh := mw.GCClient.Bucket(mw.GCbucket)
+	//open GS bucket
+	bh := mw.GSClient.Bucket(mw.GSbucket)
 
-	//GC file to open
-	obj := bh.Object(mw.s3bucketname + "/" + mw.s3fileName)
-	GCw := obj.NewWriter(mw.ctx)
-	defer GCw.Close()
+	//GS file to open
+	obj := bh.Object(mw.GSfilename)
+	GSw := obj.NewWriter(mw.ctx)
+	defer GSw.Close()
 
 	//s3 file info
 	stat, err := s3reader.Stat()
@@ -163,7 +174,7 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		return
 	}
 
-	if _, err := io.CopyN(GCw, s3reader, stat.Size); err != nil {
+	if _, err := io.CopyN(GSw, s3reader, stat.Size); err != nil {
 		log.Print(mw.s3fileName, err)
 		return
 	} else {
@@ -188,7 +199,7 @@ func getGSfileMap(Rclient *redis.Client, client *storage.Client, ctx context.Con
 			log.Println(err)
 			return err
 		}
-		if attrs.Name[len(attrs.Name)-1:] != "/" {
+		if attrs.Name[len(attrs.Name)-1] != '/' {
 			err := Rclient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
 			if err != nil {
 				log.Print(err)
