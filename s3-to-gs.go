@@ -18,30 +18,27 @@ import (
 )
 
 type MyWork struct {
-	s3fileName   string
-	GSbucket     string
-	s3bucketname string
-	filename     string
-	GSClient     *storage.Client
-	ctx          context.Context
 	s3Client     *minio.Client
+	s3fileName   string
+	s3bucketname string
+	GSbucket     string
+	GSClient     *storage.Client
 	count        *int
-	GSfilename   string
 }
 
 func main() {
-	s3endpoint := flag.String("s3endpoint", "", "s3 url")
-	s3accessKeyID := flag.String("s3ID", "", "s3 access ID")
-	s3secretAccessKey := flag.String("s3Key", "", "s3 access Key")
+	s3endpoint := flag.String("s3ep", "", "s3 url")
+	s3accessKeyID := flag.String("s3id", "", "s3 access ID")
+	s3secretAccessKey := flag.String("s3key", "", "s3 access Key")
 	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
-	projectID := flag.String("GSproject", "", "gcloud projectID")
-	GSbucketName := flag.String("GSbucketName", "", "gcloud bucket name")
+	projectID := flag.String("gsproject", "", "gcloud projectID")
+	GSbucketName := flag.String("gsbucket", "", "gcloud bucket name")
 	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
-	copyBucket := flag.String("copyBucket", "", "comma separated s3 bucket names to process, exclude bucket read from s3")
-	getNewFiles := flag.Bool("getNewFiles", false, "Get files modified in 24h")
-	redisHost := flag.String("redisHost", "localhost:6379", "redis server address")
-	redisPass := flag.String("redisPass", "", "redis password")
-	redisDB := flag.Int("redisDB", 0, "redis database")
+	copyBucket := flag.String("copy", "", "comma separated s3 bucket names to process, do not read bucket list from s3")
+	getNewFiles := flag.Bool("getnew", true, "Get files modified in 24h")
+	redisHost := flag.String("rhost", "localhost:6379", "redis server address")
+	redisPass := flag.String("rpass", "", "redis password")
+	redisDB := flag.Int("rdb", 0, "redis database")
 
 	flag.Parse()
 
@@ -60,7 +57,6 @@ func main() {
 
 	workPool := workpool.New(runtime.NumCPU(), queueCapacity)
 
-	ctx := context.Background()
 	// Creates a redis Сlient
 	redisСlient := redis.NewClient(&redis.Options{
 		Addr:     *redisHost,
@@ -73,6 +69,7 @@ func main() {
 	defer redisСlient.Close()
 
 	// Creates a GS Client.
+	ctx := context.Background()
 	GSClient, err := storage.NewClient(ctx)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
@@ -113,21 +110,24 @@ func main() {
 			GSmd5, err := redisСlient.Get(GSfilename).Result()
 			if GSmd5 != s3md5 || err == redis.Nil {
 				work := MyWork{
-					s3fileName:   s3file.Key,
-					GSbucket:     *GSbucketName,
-					s3bucketname: s3bucket,
-					ctx:          ctx,
 					s3Client:     s3Client,
+					s3fileName:   s3file.Key,
+					s3bucketname: s3bucket,
+					GSbucket:     *GSbucketName,
 					GSClient:     GSClient,
 					count:        &count,
 				}
-				if err := delayFullQueue(workPool, queueCapacity-10); err != nil {
-					log.Printf("ERROR: %s\n", err)
+
+				if err != redis.Nil {
+					redisСlient.Del(GSfilename)
 				}
+
+				delayFullQueue(workPool, queueCapacity-10)
+
 				if err := workPool.PostWork("routine", &work); err != nil {
 					log.Printf("ERROR: %s\n", err)
 				}
-				redisСlient.Del(GSfilename)
+
 			} else if err != nil {
 				log.Print(err)
 			} else {
@@ -135,6 +135,13 @@ func main() {
 			}
 		}
 	}
+	
+	//Wait for empty queue
+	for workPool.QueuedWork() > 0 {
+		time.Sleep(5 * time.Second)
+		log.Println("wait queue")
+	}
+	log.Println("Finished")
 }
 
 func getGSfilename(bucket, filePath string) string {
@@ -169,6 +176,10 @@ func getS3buckets(Client *minio.Client, exclude, include *string) ([]string, err
 	} else {
 		buckets = strings.Split(*include, ",")
 	}
+	log.Println("Buckets for process")
+	for _, printbucket := range buckets {
+		log.Println(printbucket)
+	}
 	return buckets, nil
 }
 
@@ -185,7 +196,8 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	//GS file to open
 	GSfilename := getGSfilename(mw.s3bucketname, mw.s3fileName)
 	obj := bh.Object(GSfilename)
-	GSw := obj.NewWriter(mw.ctx)
+	ctx := context.Background()
+	GSw := obj.NewWriter(ctx)
 	defer GSw.Close()
 
 	//s3 file info
