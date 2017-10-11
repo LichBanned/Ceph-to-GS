@@ -221,7 +221,7 @@ func (mw *MyWork) DoWork(workRoutine int) {
 		return
 	} else {
 		*mw.count++
-		if *mw.count%20 == 0 {
+		if *mw.count%50 == 0 {
 			log.Println("bucket:", mw.s3bucketname, "File processed:", *mw.count, "File:", mw.s3fileName)
 		}
 	}
