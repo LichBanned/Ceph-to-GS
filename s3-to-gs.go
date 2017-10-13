@@ -45,8 +45,10 @@ type Config struct {
 	delteOld          bool
 }
 
+var config Config
+
 func main() {
-	config := getConfig()
+	config = getConfig()
 	var queueCapacity int32 = 5000
 	count := 0
 
@@ -131,6 +133,9 @@ func main() {
 
 			} else if err != nil {
 				log.Print(err)
+				if _, err = redisСlient.Ping().Result(); err != nil {
+					redisСlient, _ = redisConnect()
+				}
 			} else {
 				redisСlient.Del(GSfilename)
 			}
@@ -150,6 +155,113 @@ func main() {
 		log.Println("wait queue")
 	}
 	log.Println("Finished")
+}
+
+func getConfig() Config {
+	var config Config
+	var ok bool
+	defaultConfig := Config{
+		s3endpoint:        "",
+		s3accessKeyID:     "",
+		s3secretAccessKey: "",
+		s3useSSL:          false,
+		projectID:         "",
+		GSbucketName:      "",
+		excludeBucket:     "",
+		copyBucket:        "",
+		getNewFiles:       false,
+		redisHost:         "127.0.0.1:6379",
+		redisPass:         "",
+		redisDB:           0,
+		delteOld:          false,
+	}
+
+	configFile := flag.String("config", "", "yaml config file path")
+	s3endpoint := flag.String("s3ep", "", "s3 url")
+	s3accessKeyID := flag.String("s3id", "", "s3 access ID")
+	s3secretAccessKey := flag.String("s3key", "", "s3 access Key")
+	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
+	projectID := flag.String("gsproject", "", "gcloud projectID")
+	GSbucketName := flag.String("gsbucket", "", "gcloud bucket name")
+	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
+	copyBucket := flag.String("copy", "", "comma separated s3 bucket names to process, do not read bucket list from s3")
+	getNewFiles := flag.Bool("getnew", true, "Get files modified in 24h")
+	redisHost := flag.String("rhost", "localhost:6379", "redis server address")
+	redisPass := flag.String("rpass", "", "redis password")
+	redisDB := flag.Int("rdb", 0, "redis database")
+
+	flag.Parse()
+
+	if *configFile != "" {
+		filename, _ := filepath.Abs(*configFile)
+		yamlFile, err := ioutil.ReadFile(filename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		var confmap map[interface{}]interface{}
+		err = yaml.Unmarshal(yamlFile, &confmap)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if config.s3endpoint, ok = confmap["s3ep"].(string); ok != true {
+			config.s3endpoint = defaultConfig.s3endpoint
+		}
+		if config.s3accessKeyID, ok = confmap["s3id"].(string); ok != true {
+			config.s3accessKeyID = defaultConfig.s3accessKeyID
+		}
+		if config.s3secretAccessKey, ok = confmap["s3key"].(string); ok != true {
+			config.s3secretAccessKey = defaultConfig.s3secretAccessKey
+		}
+		if config.projectID, ok = confmap["gsproject"].(string); ok != true {
+			config.projectID = defaultConfig.projectID
+		}
+		if config.GSbucketName, ok = confmap["gsbucket"].(string); ok != true {
+			config.GSbucketName = defaultConfig.GSbucketName
+		}
+		if config.excludeBucket, ok = confmap["exclude"].(string); ok != true {
+			config.excludeBucket = defaultConfig.excludeBucket
+		}
+		if config.copyBucket, ok = confmap["copy"].(string); ok != true {
+			config.copyBucket = defaultConfig.copyBucket
+		}
+		if config.redisHost, ok = confmap["rhost"].(string); ok != true {
+			config.redisHost = defaultConfig.redisHost
+		}
+		if config.redisPass, ok = confmap["rpass"].(string); ok != true {
+			config.redisPass = defaultConfig.redisPass
+		}
+		if config.s3useSSL, ok = confmap["s3ssl"].(bool); ok != true {
+			config.s3useSSL = defaultConfig.s3useSSL
+		}
+		if config.getNewFiles, ok = confmap["getnew"].(bool); ok != true {
+			config.getNewFiles = defaultConfig.getNewFiles
+		}
+		if config.redisDB, ok = confmap["rdb"].(int); ok != true {
+			config.redisDB = defaultConfig.redisDB
+		}
+	} else {
+		config.s3endpoint = *s3endpoint
+		config.s3accessKeyID = *s3accessKeyID
+		config.s3secretAccessKey = *s3secretAccessKey
+		config.s3useSSL = *s3useSSL
+		config.projectID = *projectID
+		config.GSbucketName = *GSbucketName
+		config.excludeBucket = *excludeBucket
+		config.copyBucket = *copyBucket
+		config.getNewFiles = *getNewFiles
+		config.redisHost = *redisHost
+		config.redisPass = *redisPass
+		config.redisDB = *redisDB
+	}
+
+	if config.projectID == "" || config.s3endpoint == "" || config.GSbucketName == "" {
+		log.Fatalf("gsproject, gsbucket, s3ep variables must be set.\n")
+	}
+
+	if config.excludeBucket != "" && config.copyBucket != "" {
+		log.Fatalf("Not use excludeBucket and copyBucket at same time ")
+	}
+	return config
 }
 
 func getGSfilename(bucket, filePath string) string {
@@ -244,118 +356,13 @@ func getGSfileMap(redisСlient *redis.Client, client *storage.Client, ctx contex
 			err := redisСlient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
 			if err != nil {
 				log.Print(err)
-				return err
+				if _, err = redisСlient.Ping().Result(); err != nil {
+					redisСlient, _ = redisConnect()
+				}
 			}
 		}
 	}
 	return nil
-}
-
-func getConfig() Config {
-	var config Config
-	var ok bool
-	defaultConfig := Config{
-		s3endpoint:        "",
-		s3accessKeyID:     "",
-		s3secretAccessKey: "",
-		s3useSSL:          false,
-		projectID:         "",
-		GSbucketName:      "",
-		excludeBucket:     "",
-		copyBucket:        "",
-		getNewFiles:       false,
-		redisHost:         "127.0.0.1:6379",
-		redisPass:         "",
-		redisDB:           0,
-		delteOld:          false,
-	}
-
-	configFile := flag.String("config", "", "yaml config file path")
-	s3endpoint := flag.String("s3ep", "", "s3 url")
-	s3accessKeyID := flag.String("s3id", "", "s3 access ID")
-	s3secretAccessKey := flag.String("s3key", "", "s3 access Key")
-	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
-	projectID := flag.String("gsproject", "", "gcloud projectID")
-	GSbucketName := flag.String("gsbucket", "", "gcloud bucket name")
-	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
-	copyBucket := flag.String("copy", "", "comma separated s3 bucket names to process, do not read bucket list from s3")
-	getNewFiles := flag.Bool("getnew", true, "Get files modified in 24h")
-	redisHost := flag.String("rhost", "localhost:6379", "redis server address")
-	redisPass := flag.String("rpass", "", "redis password")
-	redisDB := flag.Int("rdb", 0, "redis database")
-
-	flag.Parse()
-
-	if *configFile != "" {
-		filename, _ := filepath.Abs(*configFile)
-		yamlFile, err := ioutil.ReadFile(filename)
-		if err != nil {
-			log.Fatal(err)
-		}
-		var confmap map[interface{}]interface{}
-		err = yaml.Unmarshal(yamlFile, &confmap)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if config.s3endpoint, ok = confmap["s3ep"].(string); ok !=true {
-			config.s3endpoint = defaultConfig.s3endpoint
-		}
-		if config.s3accessKeyID, ok = confmap["s3id"].(string); ok !=true {
-			config.s3accessKeyID = defaultConfig.s3accessKeyID
-		}
-		if config.s3secretAccessKey, ok = confmap["s3key"].(string); ok !=true {
-			config.s3secretAccessKey = defaultConfig.s3secretAccessKey
-		}
-		if config.projectID, ok = confmap["gsproject"].(string); ok !=true {
-			config.projectID = defaultConfig.projectID
-		}
-		if config.GSbucketName, ok = confmap["gsbucket"].(string); ok !=true {
-			config.GSbucketName = defaultConfig.GSbucketName
-		}
-		if config.excludeBucket, ok = confmap["exclude"].(string); ok !=true {
-			config.excludeBucket = defaultConfig.excludeBucket
-		}
-		if config.copyBucket, ok = confmap["copy"].(string); ok !=true {
-			config.copyBucket = defaultConfig.copyBucket
-		}
-		if config.redisHost, ok = confmap["rhost"].(string); ok !=true {
-			config.redisHost = defaultConfig.redisHost
-		}
-		if config.redisPass, ok = confmap["rpass"].(string); ok !=true {
-			config.redisPass = defaultConfig.redisPass
-		}
-		if config.s3useSSL, ok = confmap["s3ssl"].(bool); ok !=true {
-			config.s3useSSL = defaultConfig.s3useSSL
-		}
-		if config.getNewFiles, ok = confmap["getnew"].(bool); ok !=true {
-			config.getNewFiles = defaultConfig.getNewFiles
-		}
-		if config.redisDB, ok = confmap["rdb"].(int); ok !=true {
-			config.redisDB = defaultConfig.redisDB
-		}
-	} else {
-		config.s3endpoint = *s3endpoint
-		config.s3accessKeyID = *s3accessKeyID
-		config.s3secretAccessKey = *s3secretAccessKey
-		config.s3useSSL = *s3useSSL
-		config.projectID = *projectID
-		config.GSbucketName = *GSbucketName
-		config.excludeBucket = *excludeBucket
-		config.copyBucket = *copyBucket
-		config.getNewFiles = *getNewFiles
-		config.redisHost = *redisHost
-		config.redisPass = *redisPass
-		config.redisDB = *redisDB
-	}
-
-	if config.projectID == "" || config.s3endpoint == "" || config.GSbucketName == "" {
-		log.Fatalf("gsproject, gsbucket, s3ep variables must be set.\n")
-	}
-
-	if config.excludeBucket != "" && config.copyBucket != "" {
-		log.Fatalf("Not use excludeBucket and copyBucket at same time ")
-	}
-	return config
 }
 
 func deleteOldFiles(GSClient *storage.Client, redisСlient *redis.Client, GSbucket string) (int, error) {
@@ -380,4 +387,23 @@ func deleteOldFiles(GSClient *storage.Client, redisСlient *redis.Client, GSbuck
 		}
 	}
 	return count, nil
+}
+
+func redisConnect() (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     config.redisHost,
+		Password: config.redisPass,
+		DB:       config.redisDB,
+	})
+	_, err := client.Ping().Result()
+	for err != nil {
+		log.Println("Redis reconnect", err)
+		client = redis.NewClient(&redis.Options{
+			Addr:     config.redisHost,
+			Password: config.redisPass,
+			DB:       config.redisDB,
+		})
+		_, err = client.Ping().Result()
+	}
+	return client, nil
 }
