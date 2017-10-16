@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,9 +25,11 @@ type MyWork struct {
 	s3Client     *minio.Client
 	s3fileName   string
 	s3bucketname string
-	GSbucket     string
-	GSClient     *storage.Client
-	count        *int
+
+	GSbucket string
+	GSClient *storage.Client
+
+	count *int
 }
 
 type Config struct {
@@ -34,15 +37,19 @@ type Config struct {
 	s3accessKeyID     string
 	s3secretAccessKey string
 	s3useSSL          bool
-	projectID         string
-	GSbucketName      string
-	excludeBucket     string
-	copyBucket        string
-	getNewFiles       bool
-	redisHost         string
-	redisPass         string
-	redisDB           int
-	delteOld          bool
+
+	redisHost string
+	redisPass string
+	redisDB   int
+
+	projectID    string
+	GSbucketName string
+
+	excludeBucket string
+	copyBucket    string
+
+	getNewFiles bool
+	delteOld    bool
 }
 
 var config Config
@@ -176,23 +183,36 @@ func getConfig() Config {
 		delteOld:          false,
 	}
 
-	configFile := flag.String("config", "", "yaml config file path")
-	s3endpoint := flag.String("s3ep", "", "s3 url")
-	s3accessKeyID := flag.String("s3id", "", "s3 access ID")
-	s3secretAccessKey := flag.String("s3key", "", "s3 access Key")
-	s3useSSL := flag.Bool("s3ssl", false, "use ssl for s3")
-	projectID := flag.String("gsproject", "", "gcloud projectID")
-	GSbucketName := flag.String("gsbucket", "", "gcloud bucket name")
-	excludeBucket := flag.String("exclude", "", "comma separated s3 bucket names to exclude from process")
-	copyBucket := flag.String("copy", "", "comma separated s3 bucket names to process, do not read bucket list from s3")
-	getNewFiles := flag.Bool("getnew", true, "Get files modified in 24h")
-	redisHost := flag.String("rhost", "localhost:6379", "redis server address")
-	redisPass := flag.String("rpass", "", "redis password")
-	redisDB := flag.Int("rdb", 0, "redis database")
+	configFile := flag.String("config", "./config.yaml", "yaml config file path")
+	s3endpoint := flag.String("s3ep", defaultConfig.s3endpoint, "s3 url")
+	s3accessKeyID := flag.String("s3id", defaultConfig.s3accessKeyID, "s3 access ID")
+	s3secretAccessKey := flag.String("s3key", defaultConfig.s3secretAccessKey, "s3 access Key")
+	s3useSSL := flag.Bool("s3ssl", defaultConfig.s3useSSL, "use ssl for s3")
+	projectID := flag.String("gsproject", defaultConfig.projectID, "gcloud projectID")
+	GSbucketName := flag.String("gsbucket", defaultConfig.GSbucketName, "gcloud bucket name")
+	excludeBucket := flag.String("exclude", defaultConfig.excludeBucket, "comma separated s3 bucket names to exclude from process")
+	copyBucket := flag.String("copy", defaultConfig.copyBucket, "comma separated s3 bucket names to process, do not read bucket list from s3")
+	getNewFiles := flag.Bool("getnew", defaultConfig.getNewFiles, "Get files modified in 24h")
+	redisHost := flag.String("rhost", defaultConfig.redisHost, "redis server address")
+	redisPass := flag.String("rpass", defaultConfig.redisPass, "redis password")
+	redisDB := flag.Int("rdb", defaultConfig.redisDB, "redis database")
 
 	flag.Parse()
-
-	if *configFile != "" {
+	if _, err := os.Stat(*configFile); os.IsNotExist(err) {
+		log.Println("No config file", err)
+		config.s3endpoint = *s3endpoint
+		config.s3accessKeyID = *s3accessKeyID
+		config.s3secretAccessKey = *s3secretAccessKey
+		config.s3useSSL = *s3useSSL
+		config.projectID = *projectID
+		config.GSbucketName = *GSbucketName
+		config.excludeBucket = *excludeBucket
+		config.copyBucket = *copyBucket
+		config.getNewFiles = *getNewFiles
+		config.redisHost = *redisHost
+		config.redisPass = *redisPass
+		config.redisDB = *redisDB
+	} else {
 		filename, _ := filepath.Abs(*configFile)
 		yamlFile, err := ioutil.ReadFile(filename)
 		if err != nil {
@@ -239,19 +259,6 @@ func getConfig() Config {
 		if config.redisDB, ok = confmap["rdb"].(int); ok != true {
 			config.redisDB = defaultConfig.redisDB
 		}
-	} else {
-		config.s3endpoint = *s3endpoint
-		config.s3accessKeyID = *s3accessKeyID
-		config.s3secretAccessKey = *s3secretAccessKey
-		config.s3useSSL = *s3useSSL
-		config.projectID = *projectID
-		config.GSbucketName = *GSbucketName
-		config.excludeBucket = *excludeBucket
-		config.copyBucket = *copyBucket
-		config.getNewFiles = *getNewFiles
-		config.redisHost = *redisHost
-		config.redisPass = *redisPass
-		config.redisDB = *redisDB
 	}
 
 	if config.projectID == "" || config.s3endpoint == "" || config.GSbucketName == "" {
@@ -403,6 +410,7 @@ func redisConnect() (*redis.Client, error) {
 			Password: config.redisPass,
 			DB:       config.redisDB,
 		})
+		time.Sleep(5 * time.Second)
 		_, err = client.Ping().Result()
 	}
 	return client, nil
