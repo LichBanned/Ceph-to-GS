@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
 	"encoding/hex"
+	"github.com/gizak/termui"
 	"github.com/go-redis/redis"
 	"github.com/goinggo/workpool"
 	"github.com/minio/minio-go"
@@ -30,6 +32,7 @@ type MyWork struct {
 	GSClient *storage.Client
 
 	count *int
+	table *termui.Table
 }
 
 type Config struct {
@@ -58,6 +61,13 @@ func main() {
 	config = getConfig()
 	var queueCapacity int32 = 5000
 	count := 0
+
+	err := termui.Init()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer termui.Close()
+	cTable, rGauge := initTable()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -88,23 +98,27 @@ func main() {
 		log.Fatalln(err)
 	}
 
+	printCurrneJob("Get S3 buckets")
 	s3buckets, err := getS3buckets(s3Client, config.excludeBucket, config.copyBucket)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	for _, s3bucket := range s3buckets {
 		redisСlient.FlushAll()
-		log.Println("Create GS file map", s3bucket)
+		printCurrneJob("Create GS file map " + s3bucket)
 		if err := getGSfileMap(redisСlient, GSClient, ctx, config.GSbucketName, s3bucket+"/", ""); err != nil {
 			log.Fatal(err)
 		}
+		redisDBfull := redisСlient.DBSize().Val()
 
 		doneCh := make(chan struct{})
 		defer close(doneCh)
-		log.Println("Compare GS file map to s3 files", s3bucket)
+		printCurrneJob("Compare GS file map to s3 files " + s3bucket)
+		//log.Println("Compare GS file map to s3 files", s3bucket)
 		for s3file := range s3Client.ListObjects(s3bucket, "", true, doneCh) {
 			if s3file.Err != nil {
-				log.Println(s3file.Err)
+				printLastErr(s3file.Err.Error())
+				//log.Println(s3file.Err)
 				continue
 			}
 			if s3file.Key[len(s3file.Key)-1] == '/' {
@@ -126,20 +140,26 @@ func main() {
 					GSbucket:     config.GSbucketName,
 					GSClient:     GSClient,
 					count:        &count,
+					table:        cTable,
 				}
 
 				if err != redis.Nil {
 					redisСlient.Del(GSfilename)
 				}
+				redisDBsize := redisСlient.DBSize().Val()
+				printRCache(rGauge, redisDBsize, redisDBfull, s3bucket)
 
 				delayFullQueue(workPool, queueCapacity-10)
 
 				if err := workPool.PostWork("routine", &work); err != nil {
-					log.Printf("ERROR: %s\n", err)
+					//log.Printf("ERROR: %s\n", err)
+					printLastErr(err.Error())
+
 				}
 
 			} else if err != nil {
-				log.Print(err)
+				//log.Print(err)
+				printLastErr(err.Error())
 				if _, err = redisСlient.Ping().Result(); err != nil {
 					redisСlient, _ = redisConnect()
 				}
@@ -148,20 +168,22 @@ func main() {
 			}
 		}
 		if config.delteOld == true {
+			printCurrneJob("Delete old files from " + s3bucket)
 			if deleted, err := deleteOldFiles(GSClient, redisСlient, config.GSbucketName); err == nil {
-				log.Println("Deleted", deleted, "old files from", s3bucket)
+				//log.Println("Deleted", deleted, "old files from", s3bucket)
+				printLastErr("Deleted " + strconv.Itoa(deleted) + " old files from " + s3bucket)
 			} else {
-				log.Println(err)
+				//log.Println(err)
+				printLastErr(err.Error())
 			}
 		}
 	}
 
-	//Wait for empty queue
 	for workPool.QueuedWork() > 0 {
 		time.Sleep(5 * time.Second)
-		log.Println("wait queue")
+		printCurrneJob("wait queue")
 	}
-	log.Println("Finished")
+	printCurrneJob("Finished")
 }
 
 func getConfig() Config {
@@ -303,10 +325,7 @@ func getS3buckets(Client *minio.Client, exclude, include string) ([]string, erro
 	} else {
 		buckets = strings.Split(include, ",")
 	}
-	log.Println("Buckets for process")
-	for _, printbucket := range buckets {
-		log.Println(printbucket)
-	}
+	printBuckets(buckets)
 	return buckets, nil
 }
 
@@ -340,12 +359,13 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	} else {
 		*mw.count++
 		if *mw.count%50 == 0 {
-			log.Println("bucket:", mw.s3bucketname, "File processed:", *mw.count, "File:", mw.s3fileName)
+			printCount(mw.table, *mw.count, mw.s3bucketname, mw.s3fileName)
 		}
 	}
 }
 
 func getGSfileMap(redisСlient *redis.Client, client *storage.Client, ctx context.Context, bucket, prefix, delim string) error {
+	count := 0
 	it := client.Bucket(bucket).Objects(ctx, &storage.Query{
 		Prefix:    prefix,
 		Delimiter: delim,
@@ -356,15 +376,20 @@ func getGSfileMap(redisСlient *redis.Client, client *storage.Client, ctx contex
 			break
 		}
 		if err != nil {
-			log.Println(err)
+			printLastErr(err.Error())
 			return err
 		}
 		if attrs.Name[len(attrs.Name)-1] != '/' {
 			err := redisСlient.Set(attrs.Name, hex.EncodeToString(attrs.MD5), 0).Err()
 			if err != nil {
-				log.Print(err)
+				printLastErr(err.Error())
 				if _, err = redisСlient.Ping().Result(); err != nil {
 					redisСlient, _ = redisConnect()
+				}
+			} else {
+				count++
+				if count%20 == 0 {
+					printGScount(count, bucket)
 				}
 			}
 		}
@@ -385,7 +410,7 @@ func deleteOldFiles(GSClient *storage.Client, redisСlient *redis.Client, GSbuck
 		}
 		o := GSClient.Bucket(GSbucket).Object(key[0])
 		if err := o.Delete(ctx); err != nil {
-			log.Println(err)
+			printLastErr(err.Error())
 		} else {
 			count++
 		}
@@ -414,4 +439,105 @@ func redisConnect() (*redis.Client, error) {
 		_, err = client.Ping().Result()
 	}
 	return client, nil
+}
+
+func initTable() (*termui.Table, *termui.Gauge) {
+	rows := [][]string{
+		[]string{"Count", "Current bucket", "Current file"},
+		[]string{"0", "                            ", "                                                                             "},
+	}
+
+	table := termui.NewTable()
+	table.Rows = rows
+	table.FgColor = termui.ColorWhite
+	table.BgColor = termui.ColorDefault
+	table.TextAlign = termui.AlignCenter
+	table.Separator = false
+	table.Analysis()
+	table.SetSize()
+	table.Y = 0
+	table.X = 0
+	table.Border = false
+
+	Gauge := termui.NewGauge()
+	Gauge.Percent = 0
+	Gauge.Width = 50
+	Gauge.Height = 3
+	Gauge.Y = 3
+	Gauge.BorderLabel = "Redis Cache search remain"
+	Gauge.Label = "{{percent}}% (0/0)"
+	Gauge.LabelAlign = termui.AlignRight
+
+	termui.Render(table, Gauge)
+
+	return table, Gauge
+}
+
+func printCount(table *termui.Table, count int, bucket, file string) {
+	table.Rows = [][]string{
+		[]string{"Count", "Current bucket", "Current file"},
+		[]string{strconv.Itoa(count), bucket, file},
+	}
+	termui.Render(table)
+}
+
+func printRCache(Gauge *termui.Gauge, size, full int64, bucket string) {
+	if size > 0 && full > 0 {
+		Gauge.Percent = int((size * 100) / full)
+		Gauge.BorderLabel = "Redis " + bucket + " search remain"
+		Gauge.Label = "{{percent}}% (" + strconv.FormatInt(size, 10) + "/" + strconv.FormatInt(full, 10) + ")"
+		termui.Render(Gauge)
+	} else if Gauge.Label != "{{percent}}% ("+"0"+"/"+"0"+")" {
+		Gauge.BorderLabel = "Redis " + bucket + " search remain"
+		Gauge.Label = "{{percent}}% (" + "0" + "/" + "0" + ")"
+		termui.Render(Gauge)
+	}
+}
+
+func printBuckets(list []string) {
+	ls := termui.NewList()
+	ls.Items = list
+	ls.ItemFgColor = termui.ColorYellow
+	ls.BorderLabel = "Buckets to process"
+	ls.Height = len(list)
+	ls.Width = 25
+	ls.Y = 6
+
+	termui.Render(ls)
+}
+
+func printCurrneJob(job string) {
+	par := termui.NewPar(job)
+	par.BorderLabel = "current job"
+	par.Height = 3
+	par.Width = 50
+	par.Y = 6
+	par.X = 27
+	//par.Border = false
+
+	termui.Render(par)
+}
+
+func printLastErr(lerr string) {
+	par := termui.NewPar(lerr)
+	par.BorderLabel = "last error"
+	par.Height = 3
+	par.Width = 50
+	par.Y = 9
+	par.X = 27
+	//par.Border = false
+
+	termui.Render(par)
+}
+
+func printGScount(count int, bucket string) {
+	par := termui.NewPar(strconv.Itoa(count))
+	par.BorderLabel = bucket + " processed"
+	par.Height = 3
+	par.Width = 20
+	par.Y = 3
+	par.X = 51
+	//par.Border = false
+
+	termui.Render(par)
 }
