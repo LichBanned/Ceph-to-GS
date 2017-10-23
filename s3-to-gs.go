@@ -98,14 +98,14 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	printCurrneJob("Get S3 buckets")
+	printCurrentJob("Get S3 buckets")
 	s3buckets, err := getS3buckets(s3Client, config.excludeBucket, config.copyBucket)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	for _, s3bucket := range s3buckets {
 		redisСlient.FlushAll()
-		printCurrneJob("Create GS file map " + s3bucket)
+		printCurrentJob("Create GS file map " + s3bucket)
 		if err := getGSfileMap(redisСlient, GSClient, ctx, config.GSbucketName, s3bucket+"/", ""); err != nil {
 			log.Fatal(err)
 		}
@@ -113,7 +113,7 @@ func main() {
 
 		doneCh := make(chan struct{})
 		defer close(doneCh)
-		printCurrneJob("Compare GS file map to s3 files " + s3bucket)
+		printCurrentJob("Compare GS file map to s3 files " + s3bucket)
 		//log.Println("Compare GS file map to s3 files", s3bucket)
 		for s3file := range s3Client.ListObjects(s3bucket, "", true, doneCh) {
 			if s3file.Err != nil {
@@ -168,7 +168,7 @@ func main() {
 			}
 		}
 		if config.delteOld == true {
-			printCurrneJob("Delete old files from " + s3bucket)
+			printCurrentJob("Delete old files from " + s3bucket)
 			if deleted, err := deleteOldFiles(GSClient, redisСlient, config.GSbucketName); err == nil {
 				//log.Println("Deleted", deleted, "old files from", s3bucket)
 				printLastErr("Deleted " + strconv.Itoa(deleted) + " old files from " + s3bucket)
@@ -181,9 +181,9 @@ func main() {
 
 	for workPool.QueuedWork() > 0 {
 		time.Sleep(5 * time.Second)
-		printCurrneJob("wait queue")
+		printCurrentJob("wait queue")
 	}
-	printCurrneJob("Finished")
+	printCurrentJob("Finished")
 }
 
 func getConfig() Config {
@@ -519,7 +519,7 @@ func printBuckets(list []string) {
 	termui.Render(ls)
 }
 
-func printCurrneJob(job string) {
+func printCurrentJob(job string) {
 	par := termui.NewPar(job)
 	par.BorderLabel = "current job"
 	par.Height = 3
