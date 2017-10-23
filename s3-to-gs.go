@@ -222,7 +222,7 @@ func getConfig() Config {
 
 	flag.Parse()
 	if _, err := os.Stat(*configFile); os.IsNotExist(err) {
-		log.Println("No config file", err)
+		//log.Println("No config file", err)
 		config.s3endpoint = *s3endpoint
 		config.s3accessKeyID = *s3accessKeyID
 		config.s3secretAccessKey = *s3secretAccessKey
@@ -339,7 +339,7 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	//open s3 file
 	s3reader, err := mw.s3Client.GetObject(mw.s3bucketname, mw.s3fileName, minio.GetObjectOptions{})
 	if err != nil {
-		log.Print(mw.s3fileName, err)
+		printLastErr(mw.s3fileName + ": " + err.Error())
 	}
 	defer s3reader.Close()
 	//open GS bucket
@@ -355,12 +355,12 @@ func (mw *MyWork) DoWork(workRoutine int) {
 	//s3 file info
 	stat, err := s3reader.Stat()
 	if err != nil {
-		log.Print(err)
+		printLastErr(err.Error())
 		return
 	}
 
 	if _, err := io.CopyN(GSw, s3reader, stat.Size); err != nil {
-		log.Print(mw.s3fileName, err)
+		printLastErr(mw.s3fileName + ": " + err.Error())
 		return
 	} else {
 		*mw.count++
@@ -442,7 +442,7 @@ func redisConnect() (*redis.Client, error) {
 	})
 	_, err := client.Ping().Result()
 	for err != nil {
-		log.Println("Redis reconnect", err)
+		printLastErr("Redis reconnect: " + err.Error())
 		client = redis.NewClient(&redis.Options{
 			Addr:     config.redisHost,
 			Password: config.redisPass,
